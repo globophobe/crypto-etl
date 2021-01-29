@@ -1,16 +1,17 @@
-import datetime
 import time
+from operator import eq, le
 
 import httpx
 import pandas as pd
-from ciso8601 import parse_datetime
+import pendulum
 from google.api_core.exceptions import ServiceUnavailable
 
 from .bqloader import (
     SINGLE_SYMBOL_SCHEMA,
-    BigQueryLoader,
+    BigQueryDaily,
+    BigQueryHourly,
     get_schema_columns,
-    get_table_name,
+    get_table_id,
 )
 from .fscache import FirestoreCache, firestore_data, get_collection_name
 from .s3downloader import (
@@ -22,46 +23,29 @@ from .s3downloader import (
     strip_nanoseconds,
     utc_timestamp,
 )
-from .utils import date_range, get_delta
+from .utils import parse_period_from_to
 
 
-class CryptoExchangeETL:
+class CryptoTick:
     def __init__(
         self,
         exchange,
         symbol,
-        min_date,
-        date_from=None,
-        date_to=None,
+        period_from=None,
+        period_to=None,
         aggregate=False,
-        schema=SINGLE_SYMBOL_SCHEMA,
         verbose=False,
     ):
         self.exchange = exchange
         self.symbol = symbol
-        self.schema = schema
+        self.period_from = period_from
+        self.period_to = period_to
         self.aggregate = aggregate
         self.verbose = verbose
 
-        self.initialize_dates(min_date, date_from, date_to)
-
-    def initialize_dates(self, min_date, date_from, date_to):
-        today = datetime.datetime.utcnow().date()
-
-        if date_from:
-            self.date_from = parse_datetime(date_from).date()
-        else:
-            self.date_from = min_date
-
-        if date_to:
-            self.date_to = parse_datetime(date_to).date()
-        else:
-            self.date_to = today
-
-        assert self.date_from <= self.date_to <= today
-
-        # State.
-        self.date = self.date_to
+    @property
+    def schema(self):
+        return SINGLE_SYMBOL_SCHEMA
 
     @property
     def exchange_display(self):
@@ -74,69 +58,65 @@ class CryptoExchangeETL:
     def log_prefix(self):
         return f"{self.exchange_display} {self.symbol}"
 
+    def get_partition_decorator(self, value):
+        raise NotImplementedError
+
     @property
     def firestore_cache(self):
-        suffix = self.get_suffix()
+        suffix = self.get_suffix(sep="-")
         collection = get_collection_name(self.exchange, suffix=suffix)
         return FirestoreCache(collection)
 
-    def has_data(self, date):
-        document = date.isoformat()
+    def get_document_name(self, partition):
+        raise NotImplementedError
+
+    def get_last_document_name(self, partition):
+        raise NotImplementedError
+
+    def get_document(self, partition):
+        document = self.get_document_name(partition)
+        return self.firestore_cache.get(document)
+
+    def get_last_document(self, partition):
+        document = self.get_last_document_name(partition)
+        return self.firestore_cache.get(document)
+
+    def has_data(self, partition):
+        document = self.get_document_name(partition)
         if self.firestore_cache.has_data(document):
             if self.verbose:
                 print(f"{self.log_prefix}: {document} OK")
             return True
 
-    def iter_hours(self, step=1):
-        hour = datetime.datetime.combine(self.date, datetime.datetime.min.time())
-        steps = 24 / step
-        assert steps % 1 == 0
-        for i in range(int(steps)):
-            next_hour = hour + datetime.timedelta(hours=1)
-            yield hour.replace(tzinfo=datetime.timezone.utc), next_hour.replace(
-                tzinfo=datetime.timezone.utc
-            )
-            hour = next_hour
-
-    def get_firebase_data(self, data_frame):
-        data = {"candles": []}
-        for hour, next_hour in self.iter_hours():
-            df = data_frame[
-                (data_frame["timestamp"] >= hour)
-                & (data_frame["timestamp"] < next_hour)
-            ]
-            if len(df):
-                open_price = df.head(1).iloc[0]
-                low_price = df.loc[df["price"].idxmin()]
-                high_price = df.loc[df["price"].idxmax()]
-                close_price = df.tail(1).iloc[0]
-                buy_side = df[df["tickRule"] == 1]
-                volume = float(df["volume"].sum())
-                buy_volume = float(buy_side["volume"].sum())
-                notional = float(df["notional"].sum())
-                buy_notional = float(buy_side["notional"].sum())
-                ticks = len(df)
-                buy_ticks = len(buy_side)
-                candle = {
-                    "open": firestore_data(row_to_json(open_price)),
-                    "low": firestore_data(row_to_json(low_price)),
-                    "high": firestore_data(row_to_json(high_price)),
-                    "close": firestore_data(row_to_json(close_price)),
-                    "volume": volume,
-                    "buyVolume": buy_volume,
-                    "notional": notional,
-                    "buyNotional": buy_notional,
-                    "ticks": ticks,
-                    "buyTicks": buy_ticks,
-                }
-            # Maybe no trades.
-            else:
-                candle = {}
-            data["candles"].append(candle)
-        return data
+    def get_firebase_data(self, df):
+        if len(df):
+            open_price = df.head(1).iloc[0]
+            low_price = df.loc[df["price"].idxmin()]
+            high_price = df.loc[df["price"].idxmax()]
+            close_price = df.tail(1).iloc[0]
+            buy_side = df[df["tickRule"] == 1]
+            volume = float(df["volume"].sum())
+            buy_volume = float(buy_side["volume"].sum())
+            notional = float(df["notional"].sum())
+            buy_notional = float(buy_side["notional"].sum())
+            ticks = len(df)
+            buy_ticks = len(buy_side)
+            return {
+                "open": firestore_data(row_to_json(open_price)),
+                "low": firestore_data(row_to_json(low_price)),
+                "high": firestore_data(row_to_json(high_price)),
+                "close": firestore_data(row_to_json(close_price)),
+                "volume": volume,
+                "buyVolume": buy_volume,
+                "notional": notional,
+                "buyNotional": buy_notional,
+                "ticks": ticks,
+                "buyTicks": buy_ticks,
+            }
+        return {}
 
     def set_firebase(self, data, attr="firestore_cache", is_complete=False, retry=5):
-        document = self.date.isoformat()
+        document = self.get_document_name(self.partition)
         # If dict, assume correct
         if isinstance(data, pd.DataFrame):
             data = self.get_firebase_data(data)
@@ -152,47 +132,31 @@ class CryptoExchangeETL:
                 time.sleep(1)
                 self.set_firebase(data, attr=attr, is_complete=is_complete, retry=r)
         else:
-            print(f"{self.log_prefix}: {self.date.isoformat()} OK")
+            print(f"{self.log_prefix}: {document} OK")
 
-    def get_response(self, retry=5):
-        e = None
-        # Retry n times.
-        for i in range(retry):
-            try:
-                return httpx.get(self.url)
-            except Exception as exception:
-                e = exception
-                time.sleep(i + 1)
-        raise e
+    def get_bigquery_loader(self, table_id, partition_value):
+        raise NotImplementedError
+
+    def iter_partition(self):
+        raise NotImplementedError
+
+    def main(self):
+        raise NotImplementedError
 
 
-class RESTExchangeETL(CryptoExchangeETL):
-    def __init__(
-        self,
-        exchange,
-        symbol,
-        min_date,
-        date_from=None,
-        date_to=None,
-        schema=SINGLE_SYMBOL_SCHEMA,
-        aggregate=False,
-        verbose=False,
-    ):
-        super().__init__(
-            exchange,
-            symbol,
-            min_date,
-            date_from=date_from,
-            date_to=date_to,
-            schema=schema,
-            aggregate=aggregate,
-            verbose=verbose,
-        )
+class CryptoTickREST(CryptoTick):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.pagination_id = None
+        self.maybe_complete = False
         self.trades = []
 
     @property
     def url(self):
+        raise NotImplementedError
+
+    @property
+    def max_requests_per_second(self):
         raise NotImplementedError
 
     @property
@@ -202,56 +166,63 @@ class RESTExchangeETL(CryptoExchangeETL):
     def get_pagination_id(self, data):
         raise NotImplementedError
 
-    def set_pagination_id(self, data):
-        raise NotImplementedError
-
-    def has_data(self, date):
-        document = date.isoformat()
-        data = self.firestore_cache.get(document)
+    def has_data(self, partition):
+        data = self.get_document(partition)
         if data:
-            today = datetime.datetime.utcnow().date()
-            # Today's data will not be complete.
-            if date == today:
+            # Fake current partition, as probably not complete
+            if self.partition == partition:
                 ok = True
-            # Previous dates should be complete.
+            # Other partitions probably complete
             else:
                 ok = data.get("ok", False)
             if ok:
                 # Pagination
                 self.pagination_id = self.get_pagination_id(data)
                 if self.verbose:
+                    document = self.get_document_name(partition)
                     print(f"{self.log_prefix}: {document} OK")
             return ok
 
     def main(self):
-        for date in date_range(self.date_from, self.date_to, reverse=True):
-            self.date = date
-            self.trades = [t for t in self.trades if t["date"] == date]
-            if not self.has_data(date) and self.can_paginate:
-                stop_execution = False
-                while not stop_execution:
-                    start_time = time.time()
-                    for i in range(self.max_requests_per_second):
-                        stop_execution = self.get_data()
-                        if stop_execution:
-                            break
-                    if not stop_execution:
-                        elapsed = time.time() - start_time
-                        if elapsed < 1:
-                            diff = 1 - elapsed
-                            time.sleep(diff)
+        for partition in self.iter_partition():
+            self.trades = self.get_valid_trades(self.trades, operator=le)
+            if not self.has_data(partition):
+                if self.maybe_trades(partition) and self.can_paginate:
+                    stop_execution = False
+                    while not stop_execution:
+                        start_time = time.time()
+                        for i in range(self.max_requests_per_second):
+                            stop_execution = self.get_data()
+                            if stop_execution:
+                                break
+                        if not stop_execution:
+                            elapsed = time.time() - start_time
+                            if elapsed < 1:
+                                diff = 1 - elapsed
+                                time.sleep(diff)
+                elif len(self.trades) and self.can_paginate:
+                    self.update()
+                # Maybe iteration complete
+                elif self.maybe_complete and self.verbose:
+                    print(f"{self.log_prefix}: Maybe complete")
+                    break
 
-        if self.aggregate:
-            self.aggregate_trigger()
+    def maybe_trades(self, partition):
+        # Do trades exceed partition boundaries?
+        if len(self.trades):
+            last_timestamp = self.trades[-1]["timestamp"]
+            return self.get_partition(last_timestamp) >= partition
+        return True
 
-        print(
-            f"{self.log_prefix}: {self.date_from.isoformat()} to "
-            f"{self.date_to.isoformat()} OK"
-        )
-
-    def aggregate_trigger(self):
-        # Intended for GCP
-        raise NotImplementedError
+    def get_valid_trades(self, trades, operator=eq):
+        return [
+            trade
+            for trade in trades
+            if operator(
+                self.get_partition_decorator(trade["timestamp"]),
+                self.partition_decorator,
+            )
+        ]
 
     def get_data(self):
         response = self.get_response()
@@ -278,34 +249,34 @@ class RESTExchangeETL(CryptoExchangeETL):
         raise NotImplementedError
 
     def parse_data(self, data):
-        trades = []
-        for d in data:
-            timestamp = self.parse_timestamp(d)
-            date = timestamp.date()
-            trade = {
-                "date": date,
-                "timestamp": timestamp,
-                "nanoseconds": 0,  # No nanoseconds.
-                "price": self.get_price(d),
-                "volume": self.get_volume(d),
-                "notional": self.get_notional(d),
-                "tickRule": self.get_tick_rule(d),
-                "index": self.get_index(d),
+        return [
+            {
+                "uid": self.get_uid(trade),
+                "timestamp": self.get_timestamp(trade),
+                "nanoseconds": self.get_nanoseconds(trade),
+                "price": self.get_price(trade),
+                "volume": self.get_volume(trade),
+                "notional": self.get_notional(trade),
+                "tickRule": self.get_tick_rule(trade),
+                "index": self.get_index(trade),
             }
-            trades.append(trade)
-        return trades
+            for trade in data
+        ]
 
-    def parse_timestamp(self, data):
+    def get_uid(self, trade):
+        raise NotImplementedError
+
+    def get_timestamp(self, trade):
         raise NotImplementedError
 
     def get_price(self, trade):
-        return float(trade["price"])
+        raise NotImplementedError
 
     def get_volume(self, trade):
-        return float(trade["price"]) * float(trade["size"])
+        raise NotImplementedError
 
     def get_notional(self, trade):
-        return float(trade["size"])
+        raise NotImplementedError
 
     def get_tick_rule(self, trade):
         raise NotImplementedError
@@ -313,87 +284,174 @@ class RESTExchangeETL(CryptoExchangeETL):
     def get_index(self, trade):
         raise NotImplementedError
 
-    def update(self, trades):
-        if trades:
+    def update_trades(self, trades):
+        if len(trades):
             start = trades[-1]
-            date = start["date"]
-            index = start["index"]
+            partition_complete = (
+                self.partition_decorator
+                != self.get_partition_decorator(start["timestamp"])
+            )
+            self.trades += trades
             # Verbose
             if self.verbose:
                 timestamp = start["timestamp"].replace(tzinfo=None).isoformat()
+                index = start["index"]
                 if not start["timestamp"].microsecond:
                     timestamp += ".000000"
                 print(f"{self.log_prefix}: {timestamp} {index}")
-            if self.date == date:
-                self.trades += [t for t in trades if t["date"] == self.date]
-            else:
-                # No days without trades.
-                assert len(pd.date_range(start=date, end=self.date)) == 2
-                data = self.trades + [t for t in trades if t["date"] == self.date]
-                if len(data):
-                    self.write(data)
+            if partition_complete or self.maybe_complete:
+                self.update()
                 return True
+        else:
+            return True
+
+    def update(self):
+        data = self.get_valid_trades(self.trades)
+        # Are there any trades?
+        if len(data):
+            self.write(data)
+        # No trades
+        else:
+            data = self.get_document(self.partition)
+            self.set_firebase({}, is_complete=True)
 
     def write(self, trades):
         start = trades[-1]
         stop = trades[0]
-        assert start["date"] == stop["date"]
+        assert self.get_partition_decorator(
+            start["timestamp"]
+        ) == self.get_partition_decorator(stop["timestamp"])
         # Dataframe
         columns = get_schema_columns(self.schema)
         data_frame = pd.DataFrame(trades, columns=columns)
         data_frame = set_types(data_frame)
         self.assert_data_frame(data_frame, trades)
-        # Previous.
-        document = get_delta(self.date, days=1).isoformat()
-        data = self.firestore_cache.get(document)
+        data = self.get_last_document(self.partition)
         is_complete = data is not None
-        # Assert last trade of the day
+        # Assert last trade
         if is_complete:
-            self.assert_is_complete(data, trades)
+            self.assert_is_complete(trades)
         # BigQuery
         suffix = self.get_suffix(sep="_")
-        table_name = get_table_name(self.exchange, suffix=suffix)
-        bigquery_loader = BigQueryLoader(table_name, self.date)
+        table_id = get_table_id(self.exchange, suffix=suffix)
+        bigquery_loader = self.get_bigquery_loader(table_id, self.partition_decorator)
         bigquery_loader.write_table(self.schema, data_frame)
         # Firebase
         data_frame = data_frame.iloc[::-1]  # Reverse data frame
         self.set_firebase(data_frame, is_complete=is_complete)
 
     def assert_data_frame(self, data_frame, trades):
+        # Are trades unique?
+        assert len(data_frame) == len(data_frame.uid.unique())
+
+    def assert_is_complete(self, trades):
         pass
 
-    def assert_is_complete(self, data, trades):
-        pass
+
+class CryptoTickHourlyMixin:
+    def get_suffix(self, sep="_"):
+        return f"{self.symbol}{sep}hot"
+
+    def get_document_name(self, timestamp):
+        return timestamp.strftime("%Y-%m-%dT%H")  # Date, plus hour
+
+    def get_last_document_name(self, timestamp):
+        last_partition = self.get_last_partition(timestamp)
+        return self.get_document_name(last_partition)
+
+    def get_partition(self, timestamp):
+        return timestamp
+
+    def get_last_partition(self, timestamp):
+        timestamp += pd.Timedelta("1h")
+        return timestamp
+
+    def get_partition_decorator(self, timestamp):
+        return timestamp.strftime("%Y%m%d%H")  # Partition by hour
+
+    def get_bigquery_loader(self, table_id, partition_decorator):
+        return BigQueryHourly(table_id, partition_decorator)
+
+    def iter_partition(self):
+        period = pendulum.period(self.period_to, self.period_from)  # Reverse order
+        for partition in period.range("hours"):
+            self.partition = partition
+            self.partition_decorator = self.get_partition_decorator(partition)
+            yield partition
 
 
-class S3CryptoExchangeETL(CryptoExchangeETL):
-    def get_url(self, date):
+class CryptoTickDailyMixin:
+    def get_document_name(self, date):
+        return date.isoformat()  # Date
+
+    def get_last_document_name(self, date):
+        last_partition = self.get_last_partition(date)
+        return self.get_document_name(last_partition)
+
+    def get_last_partition(self, date):
+        date += pd.Timedelta("1d")
+        return date
+
+    def has_data(self, partition):
+        ok = super().has_data(partition)
+        # Hourly has pagination_id
+        if not ok and hasattr(self, "pagination_id"):
+            if not self.pagination_id:
+                timestamp_from, _, _, date_to = parse_period_from_to()
+                # Maybe hourly
+                if partition == date_to:
+                    document_name = timestamp_from.strftime("%Y-%m-%dT%H")
+                    collection = f"{self.firestore_cache.collection}-hot"
+                    data = FirestoreCache(collection).get(document_name)
+                    if data:
+                        self.pagination_id = self.get_pagination_id(data)
+        return ok
+
+    def get_partition(self, timestamp):
+        return timestamp.date()
+
+    def get_partition_decorator(self, date):
+        return date.strftime("%Y%m%d")  # Partition by date
+
+    def get_bigquery_loader(self, table_id, partition_decorator):
+        return BigQueryDaily(table_id, partition_decorator)
+
+    def iter_partition(self):
+        period = pendulum.period(self.period_to, self.period_from)  # Reverse order
+        for partition in period.range("days"):
+            self.partition = partition
+            self.partition_decorator = self.get_partition_decorator(partition)
+            yield partition
+
+
+class CryptoTickDailyS3Mixin(CryptoTickDailyMixin):
+    def get_url(self, partition):
         raise NotImplementedError
 
     def main(self):
-        for date in date_range(self.date_from, self.date_to, reverse=True):
-            date_display = date.isoformat()
-            if not self.has_data(date):
-                url = self.get_url(date)
+        for partition in self.iter_partition():
+            self.partition_decorator = self.get_partition_decorator(partition)
+            document = self.get_document_name(partition)
+            if not self.has_data(partition):
+                url = self.get_url(partition)
                 if self.verbose:
-                    print(f"{self.log_prefix}: downloading {date_display}")
+                    print(f"{self.log_prefix}: downloading {document}")
                 data_frame = HistoricalDownloader(url).main()
                 if data_frame is not None:
-                    self.process_dataframe(data_frame)
-            # Next
-            self.date = get_delta(date, days=-1)
+                    df = self.filter_dataframe(data_frame)
+                    if len(df):
+                        self.process_dataframe(df)
+                    else:
+                        if self.verbose:
+                            print(f"{self.log_prefix}: Maybe complete")
+                        break
+                else:
+                    if self.verbose:
+                        print(f"{self.log_prefix}: Maybe complete")
+                    break
 
-        if self.aggregate:
-            self.aggregate_trigger()
-
-        print(
-            f"{self.log_prefix}: {self.date_from.isoformat()} to "
-            f"{self.date_to.isoformat()} OK"
-        )
-
-    def aggregate_trigger(self):
-        # Intended for GCP
-        raise NotImplementedError
+    def filter_dataframe(self, data_frame):
+        return data_frame
 
     def process_dataframe(self, data_frame):
         data_frame = self.parse_dataframe(data_frame)
@@ -418,74 +476,8 @@ class S3CryptoExchangeETL(CryptoExchangeETL):
         data_frame = data_frame[columns]
         # BigQuery
         suffix = self.get_suffix(sep="_")
-        table_name = get_table_name(self.exchange, suffix=suffix)
-        bigquery_loader = BigQueryLoader(table_name, self.date)
+        table_id = get_table_id(self.exchange, suffix=suffix)
+        bigquery_loader = self.get_bigquery_loader(table_id, self.partition_decorator)
         bigquery_loader.write_table(self.schema, data_frame)
         # Firebase
         self.set_firebase(data_frame, is_complete=True)
-
-
-class FuturesETL(CryptoExchangeETL):
-    def get_symbols(self, root_symbol):
-        raise NotImplementedError
-
-    def get_suffix(self, sep="-"):
-        raise NotImplementedError
-
-    @property
-    def log_prefix(self):
-        suffix = self.get_suffix(" ")
-        return f"{self.exchange_display} {suffix}"
-
-    @property
-    def active_symbols(self):
-        return [
-            s
-            for s in self.symbols
-            if s["listing"].date() <= self.date <= s["expiry"].date()
-        ]
-
-    def has_symbols(self, data):
-        return all([data.get(s["symbol"], None) for s in self.active_symbols])
-
-    def get_symbol_data(self, symbol):
-        return [s for s in self.symbols if s["symbol"] == symbol][0]
-
-    def has_data(self, date):
-        """Firestore cache with keys for each symbol, all symbols have data."""
-        document = date.isoformat()
-        if not self.active_symbols:
-            print(f"{self.log_prefix}: No data")
-            return True
-        else:
-            data = self.firestore_cache.get(document)
-            if data:
-                ok = data.get("ok", False)
-                if ok and self.has_symbols(data):
-                    print(f"{self.log_prefix}: {document} OK")
-                    return True
-
-    def get_firebase_data(self, data_frame):
-        data = {}
-        for s in self.active_symbols:
-            symbol = s["symbol"]
-            # API data
-            d = self.get_symbol_data(symbol)
-            # Dataframe
-            df = data_frame[data_frame["symbol"] == symbol]
-            # Maybe symbol
-            if len(df):
-                data[symbol] = super().get_firebase_data(df)
-                data[symbol]["listing"] = d["listing"].replace(
-                    tzinfo=datetime.timezone.utc
-                )
-                data[symbol]["expiry"] = d["expiry"].replace(
-                    tzinfo=datetime.timezone.utc
-                )
-                # for key in ("listing", "expiry"):
-                #     value = data[symbol][key]
-                #     if not hasattr(value, "_nanosecond"):
-                #         setattr(value, "_nanosecond", 0)
-            else:
-                df[symbol] = {}
-        return data

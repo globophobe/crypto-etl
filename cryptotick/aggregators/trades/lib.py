@@ -1,7 +1,5 @@
 import pandas as pd
 
-from ..lib import calc_exponent
-
 
 def is_sample(last_row, row, has_multiple_symbols=False):
     if has_multiple_symbols:
@@ -62,10 +60,10 @@ def aggregate_trades(data_frame, has_multiple_symbols=False):
         samples.append(aggregated_sample)
     # Instantiate dataframe
     data_frame = pd.DataFrame(samples)
-    # Round slippage
-    data_frame.slippage = data_frame.slippage.round(6)
-    # Next, calculate exponent.
-    data_frame = calculate_exponent(data_frame)
+    # Are there any samples?
+    if len(data_frame):
+        # Round slippage
+        data_frame.slippage = data_frame.slippage.round(6)
     return data_frame
 
 
@@ -85,6 +83,7 @@ def aggregate_trade(data_frame, has_multiple_symbols=False):
         "slippage": slippage,
         "volume": data_frame.volume.sum(),
         "notional": notional,
+        "ticks": len(data_frame),
         "tickRule": last_row.tickRule,
     }
     if has_multiple_symbols:
@@ -112,8 +111,3 @@ def calculate_slippage(data_frame, notional):
 def volume_weighted_average_price(data_frame):
     vwap = data_frame.volume.cumsum() / data_frame.notional.cumsum()
     return vwap.iloc[-1]
-
-
-def calculate_exponent(data_frame):
-    data_frame["exponent"] = data_frame.volume.apply(calc_exponent)
-    return data_frame

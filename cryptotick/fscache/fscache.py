@@ -38,8 +38,10 @@ class FirestoreCache:
         if data:
             return data.to_dict()
 
-    def get_one(self, order_by=None, direction=firestore.Query.ASCENDING):
+    def get_one(self, where=None, order_by=None, direction=firestore.Query.ASCENDING):
         query = self.firestore.collection(self.collection)
+        if where:
+            query = query.where(*where)
         if order_by:
             query = query.order_by(order_by, direction=direction)
         query = query.limit(1)

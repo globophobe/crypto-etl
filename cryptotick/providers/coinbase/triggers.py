@@ -37,7 +37,6 @@ class CoinbaseSpotETLAIPlatformTrigger(CoinbaseSpotETL):
                     "--date-to",
                     self.date_to.isoformat(),
                     "--aggregate",
-                    self.aggregate,
                 ],
             }
             date = self.date_from.strftime("%Y%m%d")

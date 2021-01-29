@@ -37,6 +37,7 @@ def firestore_data(data, strip_date=True):
             data[key] = value
     # Float
     for key in (
+        "lastPrice",
         "open",
         "high",
         "low",
@@ -44,10 +45,16 @@ def firestore_data(data, strip_date=True):
         "price",
         "slippage",
         "buySlippage",
+        "topNSlippage",
+        "topNBuySlippage",
         "volume",
         "buyVolume",
+        "topNVolume",
+        "topNBuyVolume",
         "notional",
         "buyNotional",
+        "topNNotional",
+        "topNBuyNotional",
     ):
         if key in data:
             data[key] = float(data[key])
@@ -57,7 +64,9 @@ def firestore_data(data, strip_date=True):
         "tickRule",
         "ticks",
         "buyTicks",
-        "exponent",
+        "sellTicks",
+        "topNTicks",
+        "topNBuyTicks",
         "index",
     ):
         if key in data:
@@ -66,4 +75,6 @@ def firestore_data(data, strip_date=True):
         data["nextDay"] = firestore_data(data["nextDay"])
     if "topN" in data:
         data["topN"] = [firestore_data(t) for t in data["topN"]]
+    if "candles" in data:
+        data["candles"] = [firestore_data(c) for c in data["candles"]]
     return data

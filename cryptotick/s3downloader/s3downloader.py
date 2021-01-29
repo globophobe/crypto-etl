@@ -8,7 +8,9 @@ import pandas as pd
 
 class HistoricalDownloader:
     def __init__(
-        self, url, columns=("timestamp", "symbol", "size", "tickDirection", "price")
+        self,
+        url,
+        columns=("trdMatchID", "symbol", "timestamp", "size", "tickDirection", "price"),
     ):
         self.url = url
         self.columns = columns
@@ -28,15 +30,16 @@ class HistoricalDownloader:
                     return self._extract(filename)
                 else:
                     print(f"No data: {self.url}")
-                    return
         else:
             print(f"Error {response.status_code}: {self.url}")
-            return
 
     def _extract(self, filename):
         try:
             data_frame = pd.read_csv(
-                filename, usecols=self.columns, engine="python", compression="gzip",
+                filename,
+                usecols=self.columns,
+                engine="python",
+                compression="gzip",
             )
         except EOFError:
             print(f"EOFError: {filename}")

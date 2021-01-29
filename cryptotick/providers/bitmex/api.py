@@ -1,9 +1,9 @@
 import datetime
-import json
 import re
 import time
 
 import httpx
+from yapic import json
 
 from .constants import API_URL, BITMEX, MAX_API_RESULTS, MIN_DATE, MONTHS, XBT, XBTUSD
 

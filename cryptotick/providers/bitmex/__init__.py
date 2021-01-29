@@ -1,14 +1,4 @@
+from .bitmex import bitmex_futures, bitmex_perpetual
 from .constants import BITMEX, XBT, XBTUSD
-from .futures import BitmexFuturesETL
-from .perpetual import BitmexPerpetualETL
-from .triggers import BitmexFuturesETLTrigger, BitmexPerpetualETLTrigger
 
-__all__ = [
-    "BITMEX",
-    "XBT",
-    "XBTUSD",
-    "BitmexPerpetualETL",
-    "BitmexPerpetualETLTrigger",
-    "BitmexFuturesETL",
-    "BitmexFuturesETLTrigger",
-]
+__all__ = ["BITMEX", "XBT", "XBTUSD", "bitmex_perpetual", "bitmex_futures"]

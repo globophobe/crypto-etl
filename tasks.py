@@ -51,7 +51,7 @@ def deploy_scheduler(
 
 
 @task
-def build_container(c, hostname="asia.gcr.io", image="crypto-exchange-etl"):
+def build_container(c, hostname="asia.gcr.io", image="cryptotick"):
     build_args = get_deploy_env_vars(pre="--build-arg ", sep=" ")
     name = get_container_name(hostname, image)
     # Build
@@ -65,7 +65,7 @@ def build_container(c, hostname="asia.gcr.io", image="crypto-exchange-etl"):
 
 
 @task
-def push_container(c, hostname="asia.gcr.io", image="crypto-exchange-etl"):
+def push_container(c, hostname="asia.gcr.io", image="cryptotick"):
     name = get_container_name(hostname, image)
     # Push
     cmd = f"docker push {name}"

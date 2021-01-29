@@ -1,0 +1,4 @@
+typer
+hiredis
+cryptofeed[redis]
+cryptofeed[gcp_pubsub]

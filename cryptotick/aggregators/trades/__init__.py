@@ -1,3 +1,3 @@
-from .trades import TradeAggregator
+from .trade_aggregator import trade_aggregator
 
-__all__ = ["TradeAggregator"]
+__all__ = ["trade_aggregator"]

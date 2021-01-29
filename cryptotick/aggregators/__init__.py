@@ -1,4 +1,3 @@
-from .renko import Renko
-from .trades import TradeAggregator
+from .trades import trade_aggregator
 
-__all__ = ["Renko", "TradeAggregator"]
+__all__ = ["trade_aggregator"]

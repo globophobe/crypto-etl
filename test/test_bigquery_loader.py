@@ -6,7 +6,6 @@ import firebase_admin
 import google.auth
 import main
 import pytest
-from cryptotick.bqloader import get_table_id
 from cryptotick.constants import (
     BIGQUERY_LOCATION,
     BIGQUERY_TABLES,
@@ -27,10 +26,10 @@ mock_context.timestamp = datetime.datetime.utcnow().isoformat()
 
 
 def cleanup_bigquery():
-    table_names = get_env_list(BIGQUERY_TABLES)
-    if table_names:
-        for table_name in table_names:
-            assert table_name.endswith("_test")
+    table_ids = get_env_list(BIGQUERY_TABLES)
+    if table_ids:
+        for table_id in table_ids:
+            assert table_id.endswith("_test")
         credentials, project_id = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
@@ -39,8 +38,7 @@ def cleanup_bigquery():
             project=project_id,
             location=os.environ.get(BIGQUERY_LOCATION, None),
         )
-        for table_name in table_names:
-            table_id = get_table_id(table_name)
+        for table_id in table_ids:
             try:
                 bq.delete_table(table_id)
             except NotFound:

@@ -1,10 +1,4 @@
+from .coinbase import coinbase_spot
 from .constants import BTCUSD, COINBASE
-from .spot import CoinbaseSpotETL
-from .triggers import CoinbaseSpotETLAIPlatformTrigger
 
-__all__ = [
-    "COINBASE",
-    "BTCUSD",
-    "CoinbaseSpotETL",
-    "CoinbaseSpotETLAIPlatformTrigger",
-]
+__all__ = ["COINBASE", "BTCUSD", "coinbase_spot"]

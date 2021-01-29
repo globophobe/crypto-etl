@@ -1,9 +1,10 @@
 import datetime
-import json
 import re
 import time
 
-from ...bqloader import MULTIPLE_SYMBOL_SCHEMA, get_table_name
+from yapic import json
+
+from ...bqloader import MULTIPLE_SYMBOL_SCHEMA, get_table_id
 from ...cryptotick import FuturesETL
 from ...utils import date_range, get_delta, publish
 from .api import get_active_futures, get_expired_futures
@@ -16,8 +17,8 @@ class FTXMOVEETL(BaseFTXETL, FuturesETL):
         self,
         date_from=None,
         date_to=None,
-        aggregate=False,
         schema=MULTIPLE_SYMBOL_SCHEMA,
+        aggregate=False,
         verbose=False,
     ):
         self.exchange = FTX
@@ -177,12 +178,3 @@ class FTXMOVEETL(BaseFTXETL, FuturesETL):
                         for candle in data[key]["candles"]:
                             if candle:
                                 assert candle["open"]["index"] > trades[0]["index"]
-
-    def aggregate_trigger(self):
-        table_name = get_table_name(FTX, suffix=self.get_suffix)
-        data = {
-            "table_name": table_name,
-            "date": self.date_from.isoformat(),
-            "has_multiple_symbols": True,
-        }
-        publish("trade-aggregator", data)

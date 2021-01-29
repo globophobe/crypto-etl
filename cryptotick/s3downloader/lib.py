@@ -51,8 +51,7 @@ def calculate_index(data_frame):
 
 
 def set_columns(data_frame):
-    data_frame.insert(0, "date", data_frame.timestamp.dt.date)
-    data_frame = data_frame.rename(columns={"size": "volume"})
+    data_frame = data_frame.rename(columns={"trdMatchID": "uid", "size": "volume"})
     return data_frame
 
 

@@ -4,40 +4,7 @@ import random
 import pandas as pd
 from cryptotick.aggregators.trades.lib import aggregate_trades
 
-from .utils import get_trade
-
-
-def get_trades(ticks, is_equal_timestamp=False, nanoseconds=None, symbol=None):
-    """Generate random trades"""
-    trade = get_trade(symbol=symbol, nanoseconds=nanoseconds, tick_rule=ticks[0])
-    trades = [trade]
-    for tick in ticks[1:]:
-        t = get_trade(
-            timestamp=trade["timestamp"] if is_equal_timestamp else None,
-            nanoseconds=nanoseconds or 0,
-            price=trade["price"] + (round(random.random() * 0.1, 2)) * tick,
-            tick_rule=tick,
-            symbol=symbol,
-        )
-        trades.append(t)
-    return trades
-
-
-def get_data_frame(all_trades):
-    symbols = [trade["symbol"] for trade in all_trades if "symbol" in trade]
-    if len(symbols):
-        # All or None
-        assert len(all_trades) == len(symbols)
-        first_symbol = symbols[0]
-        has_multiple_symbols = all([first_symbol == symbol for symbol in symbols])
-    else:
-        has_multiple_symbols = False
-    trades = []
-    for trade in all_trades:
-        ticks = trade.pop("ticks")
-        trades += get_trades(ticks, **trade)
-    data_frame = pd.DataFrame(trades)
-    return data_frame, has_multiple_symbols
+from .utils import get_data_frame, get_trade
 
 
 def get_samples(trades):
@@ -46,25 +13,13 @@ def get_samples(trades):
 
 
 def test_equal_symbols_and_timestamps_and_ticks():
-    trades = [
-        {
-            "symbol": "A",
-            "is_equal_timestamp": True,
-            "ticks": [1, 1],
-        }
-    ]
+    trades = [{"symbol": "A", "is_equal_timestamp": True, "ticks": [1, 1]}]
     samples = get_samples(trades)
     assert len(samples) == 1
 
 
 def test_equal_symbols_and_timestamps_and_not_equal_ticks():
-    trades = [
-        {
-            "symbol": "A",
-            "is_equal_timestamp": True,
-            "ticks": [1, -1],
-        }
-    ]
+    trades = [{"symbol": "A", "is_equal_timestamp": True, "ticks": [1, -1]}]
     samples = get_samples(trades)
     assert len(samples) == 2
 
@@ -137,12 +92,3 @@ def test_slippage():
     data_frame = pd.DataFrame(trades)
     df = aggregate_trades(data_frame)
     assert df.loc[0].slippage == 10
-
-
-def test_exponent():
-    trades = [get_trade(price=i, notional=pow(10, i)) for i in range(0, 10)]
-    data_frame = pd.DataFrame(trades[1:])
-    df = aggregate_trades(data_frame)
-    for row in df.itertuples():
-        index = row.Index
-        assert row.exponent == index + 1

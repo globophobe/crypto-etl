@@ -1,8 +1,10 @@
 httpx
 ciso8601
+yapic.json
 firebase-admin
+pendulum
 pandas
 pyarrow
 google-cloud-pubsub
-google-cloud-bigquery[pyarrow]
+google-cloud-bigquery
 google-cloud-bigquery-storage

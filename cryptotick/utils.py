@@ -1,13 +1,18 @@
 import base64
 import datetime
-import json
 import os
 from pathlib import Path
 
 import pandas as pd
 from google.cloud import pubsub_v1
+from yapic import json
 
-from .constants import GCP_APPLICATION_CREDENTIALS, PRODUCTION_ENV_VARS, PROJECT_ID
+from .constants import (
+    BIGQUERY_HOT,
+    GCP_APPLICATION_CREDENTIALS,
+    PRODUCTION_ENV_VARS,
+    PROJECT_ID,
+)
 
 
 def set_environment():
@@ -64,20 +69,93 @@ def is_local():
     return all([os.environ.get(key, None) for key in GCP_APPLICATION_CREDENTIALS])
 
 
-def get_container_name(hostname="asia.gcr.io", image="crypto-exchange-etl"):
+def get_container_name(hostname="asia.gcr.io", image="cryptotick"):
     project_id = os.environ[PROJECT_ID]
     return f"{hostname}/{project_id}/{image}"
 
 
+def parse_period_from_to(period_from=None, period_to=None):
+    date_from = date_to = timestamp_from = timestamp_to = None
+    period_from = parse_period(period_from)
+    period_to = parse_period(period_to)
+    now = datetime.datetime.utcnow()
+    today = now.date()
+    date_to_max = today - BIGQUERY_HOT
+    timestamp_from_min = datetime.datetime.combine(
+        date_to_max + pd.Timedelta("1d"), datetime.datetime.min.time()
+    )
+    if isinstance(period_to, pd.Timedelta):
+        timestamp_to = absolute_delta(now, period_to)
+        date_to = date_to_max
+    elif isinstance(period_to, datetime.date):
+        date_to = period_to
+        if date_to < date_to_max:
+            timestamp_from = timestamp_to = None
+    else:
+        date_to = date_to_max
+        timestamp_to = now
+    if isinstance(period_from, pd.Timedelta):
+        timestamp_from = absolute_delta(now, period_from)
+        if timestamp_from < timestamp_from_min:
+            date_from = timestamp_from.date()
+            date_to = date_to_max
+            timestamp_from = timestamp_from_min
+        else:
+            date_from = date_to = None
+    elif isinstance(period_from, datetime.date):
+        date_from = period_from
+    else:
+        date_from = datetime.date(2010, 1, 1)
+        if timestamp_to and not timestamp_from:
+            timestamp_from = timestamp_from_min
+    if timestamp_to and timestamp_to < timestamp_from_min:
+        timestamp_from = timestamp_to = None
+        date_to = timestamp_to.date()
+        assert (
+            timestamp_from <= timestamp_to
+        ), f'"{period_from}" is not before "{period_to}"'
+    if timestamp_from:
+        timestamp_from = timestamp_from.replace(tzinfo=datetime.timezone.utc)
+    if timestamp_to:
+        timestamp_to = timestamp_to.replace(tzinfo=datetime.timezone.utc)
+    return timestamp_from, timestamp_to, date_from, date_to
+
+
+def parse_period(value):
+    if value:
+        delta = parse_timedelta(value)
+        if not delta:
+            return parse_date(value)
+        return delta
+
+
+def parse_timedelta(value):
+    try:
+        delta = pd.Timedelta(value)
+    except ValueError:
+        pass
+    else:
+        return delta
+
+
+def parse_date(value):
+    try:
+        date = datetime.date.fromisoformat(value)
+    except ValueError:
+        pass
+    else:
+        return date
+
+
 def get_delta(
-    d=None, microseconds=0, milliseconds=0, seconds=0, minutes=0, hours=0, days=0
+    date=None, microseconds=0, milliseconds=0, seconds=0, minutes=0, hours=0, days=0
 ):
     assert microseconds or milliseconds or seconds or minutes or days
-    if isinstance(d, datetime.date):
-        d = datetime.datetime.combine(d, datetime.datetime.min.time())
+    if isinstance(date, datetime.date):
+        date = datetime.datetime.combine(date, datetime.datetime.min.time())
     else:
-        d = datetime.datetime.utcnow()
-    d += datetime.timedelta(
+        date = datetime.datetime.utcnow()
+    date += datetime.timedelta(
         microseconds=microseconds,
         milliseconds=milliseconds,
         seconds=seconds,
@@ -85,7 +163,15 @@ def get_delta(
         hours=hours,
         days=days,
     )
-    return d.date()
+    return date.date()
+
+
+def absolute_delta(value, delta):
+    if delta.total_seconds() < 0:
+        value += delta
+    else:
+        value -= delta
+    return value
 
 
 def date_range(date_from=None, date_to=None, reverse=False):
